@@ -194,6 +194,41 @@ button:disabled { opacity: 0.55; cursor: wait; }
 
 a.quiet { color: var(--ink); }
 
+.nav { overflow-x: auto; }
+.nav a { white-space: nowrap; padding: 8px 10px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  min-height: 40px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.chip.on { background: var(--ink); color: white; border-color: var(--ink); }
+
+.job-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.prewrap { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.status-completed { color: var(--green); background: #d9efe4; }
+.status-invoiced { color: var(--ink); background: var(--line); }
+.status-cancelled { color: var(--muted); background: var(--line); }
+
+.lines { display: grid; gap: 8px; }
+.line { display: flex; gap: 12px; align-items: center; padding-top: 8px; border-top: 1px solid var(--line); }
+.line-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.line-actions button.secondary { min-height: 40px; padding: 6px 12px; }
+
+.picked { padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+
+.costs { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 16px; align-items: baseline; }
+.costs .qty, .costs strong:nth-child(3n+2), .costs strong:nth-child(3n) { text-align: right; }
+.warning { margin: 0; color: var(--amber); }
+
+.rate-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; padding-top: 8px; border-top: 1px solid var(--line); }
+.rate-row strong { grid-column: 1 / -1; }
+.rate-row button { grid-column: 1 / -1; }
+
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 @media (min-width: 800px) {

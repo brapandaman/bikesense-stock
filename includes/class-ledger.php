@@ -15,6 +15,9 @@ class BS_Stock_Ledger {
 	const META_BARCODE  = '_bs_barcode';
 	const META_LOW      = '_bs_low_stock';
 	const META_SNAPSHOT = '_bs_shop_snapshot';
+	const META_SUNDRY   = '_bs_sundry';
+	const META_UNIT     = '_bs_unit';
+	const META_COST     = '_bs_cost';
 
 	/**
 	 * @return string
@@ -41,20 +44,67 @@ class BS_Stock_Ledger {
 	}
 
 	/**
+	 * Sundries keep two decimals. Other parts follow WooCommerce, which rounds to whole units by default.
+	 *
 	 * @param mixed $qty Raw quantity.
+	 * @param bool  $decimal Keep decimals.
 	 * @return float|null
 	 */
-	public static function normalize_qty( $qty ) {
+	public static function normalize_qty( $qty, $decimal = false ) {
 		if ( ! is_numeric( $qty ) ) {
 			return null;
 		}
 
 		$qty = (float) $qty;
+		if ( $decimal ) {
+			return round( $qty, 2 );
+		}
 		if ( function_exists( 'wc_stock_amount' ) ) {
 			$qty = (float) wc_stock_amount( $qty );
 		}
 
 		return $qty;
+	}
+
+	/**
+	 * @param int $product_id Product id.
+	 * @return bool
+	 */
+	public static function is_sundry( $product_id ) {
+		return '1' === get_post_meta( $product_id, self::META_SUNDRY, true );
+	}
+
+	/**
+	 * @param int $product_id Product id.
+	 * @return string
+	 */
+	public static function unit( $product_id ) {
+		return (string) get_post_meta( $product_id, self::META_UNIT, true );
+	}
+
+	/**
+	 * Cost price per unit excluding VAT, or null when nobody has entered one.
+	 *
+	 * @param int $product_id Product id.
+	 * @return float|null
+	 */
+	public static function unit_cost( $product_id ) {
+		$raw = get_post_meta( $product_id, self::META_COST, true );
+		return ( '' === $raw || false === $raw || ! is_numeric( $raw ) ) ? null : (float) $raw;
+	}
+
+	/**
+	 * @param float  $qty Quantity.
+	 * @param string $unit Unit label.
+	 * @return string
+	 */
+	public static function qty_label( $qty, $unit ) {
+		$unit = trim( (string) $unit );
+		if ( '' === $unit || 'each' === strtolower( $unit ) ) {
+			return self::format_qty( $qty );
+		}
+
+		return self::format_qty( $qty ) . ' ' . $unit;
 	}
 
 	/**
@@ -347,7 +397,7 @@ class BS_Stock_Ledger {
 			}
 		}
 
-		return (float) self::normalize_qty( $total );
+		return (float) self::normalize_qty( $total, self::is_sundry( $product_id ) );
 	}
 
 	/**
@@ -399,7 +449,7 @@ class BS_Stock_Ledger {
 			return $location;
 		}
 
-		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null );
+		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null, self::is_sundry( $product->get_id() ) );
 		if ( null === $qty || $qty <= 0 ) {
 			return new WP_Error( 'bs_stock_qty', 'Enter a quantity greater than zero.', array( 'status' => 400 ) );
 		}
@@ -437,7 +487,7 @@ class BS_Stock_Ledger {
 			return $location;
 		}
 
-		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null );
+		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null, self::is_sundry( $product->get_id() ) );
 		if ( null === $qty || $qty < 0 ) {
 			return new WP_Error( 'bs_stock_qty', 'Enter the quantity you counted.', array( 'status' => 400 ) );
 		}
@@ -481,7 +531,7 @@ class BS_Stock_Ledger {
 			return new WP_Error( 'bs_stock_transfer', 'Choose a different location to transfer to.', array( 'status' => 400 ) );
 		}
 
-		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null );
+		$qty = self::normalize_qty( isset( $args['qty'] ) ? $args['qty'] : null, self::is_sundry( $product->get_id() ) );
 		if ( null === $qty || $qty <= 0 ) {
 			return new WP_Error( 'bs_stock_qty', 'Enter a quantity greater than zero.', array( 'status' => 400 ) );
 		}
@@ -562,6 +612,62 @@ class BS_Stock_Ledger {
 
 		self::after_movement( $product_id );
 		return self::movement_result( $product_id, array( $moved ) );
+	}
+
+	/**
+	 * One job booking ('out') or return ('in'). The caller holds the transaction and calls after_movement after it commits.
+	 *
+	 * @param array $args product (WC_Product), location_id, type, qty (already normalized), note, job_id, source_key.
+	 * @return array|WP_Error Formatted movement.
+	 */
+	public static function record_job( $args ) {
+		$type     = isset( $args['type'] ) ? $args['type'] : '';
+		$product  = isset( $args['product'] ) ? $args['product'] : null;
+		$location = self::require_location( isset( $args['location_id'] ) ? $args['location_id'] : 0 );
+		if ( ! is_object( $product ) || ! in_array( $type, array( 'in', 'out' ), true ) ) {
+			return new WP_Error( 'bs_stock_type', 'Unknown movement.', array( 'status' => 400 ) );
+		}
+		if ( is_wp_error( $location ) ) {
+			return $location;
+		}
+
+		$qty = isset( $args['qty'] ) ? (float) $args['qty'] : 0.0;
+		if ( $qty <= 0 ) {
+			return new WP_Error( 'bs_stock_qty', 'Enter a quantity greater than zero.', array( 'status' => 400 ) );
+		}
+
+		return self::write_movement(
+			$product,
+			$location,
+			$type,
+			null,
+			'out' === $type ? 0 - $qty : $qty,
+			isset( $args['note'] ) ? $args['note'] : '',
+			'in' === $type,
+			array(
+				'source_key' => isset( $args['source_key'] ) ? $args['source_key'] : '',
+				'job_id'     => isset( $args['job_id'] ) ? (int) $args['job_id'] : 0,
+			),
+			false
+		);
+	}
+
+	/**
+	 * A single countable part, or the same friendly errors as stock taking.
+	 *
+	 * @param int $product_id Product id.
+	 * @return WC_Product|WP_Error
+	 */
+	public static function countable_product( $product_id ) {
+		return self::require_product( array( 'product_id' => (int) $product_id ) );
+	}
+
+	/**
+	 * @param string $source_key Idempotency key.
+	 * @return bool
+	 */
+	public static function source_used( $source_key ) {
+		return '' !== $source_key && null !== self::movement_by_source( $source_key );
 	}
 
 	/**
@@ -646,10 +752,11 @@ class BS_Stock_Ledger {
 				'user_id'       => isset( $context['user_id'] ) ? (int) $context['user_id'] : get_current_user_id(),
 				'order_id'      => isset( $context['order_id'] ) ? (int) $context['order_id'] : 0,
 				'order_item_id' => isset( $context['order_item_id'] ) ? (int) $context['order_item_id'] : 0,
+				'job_id'        => empty( $context['job_id'] ) ? null : (int) $context['job_id'],
 				'source_key'    => $source_key,
 				'created_at'    => $now,
 			),
-			array( '%d', '%d', '%s', '%f', '%f', '%f', '%s', '%d', '%d', '%d', '%s', '%s' )
+			array( '%d', '%d', '%s', '%f', '%f', '%f', '%s', '%d', '%d', '%d', '%d', '%s', '%s' )
 		);
 
 		if ( ! $inserted ) {
@@ -671,7 +778,7 @@ class BS_Stock_Ledger {
 	/**
 	 * @param int $product_id Product id.
 	 */
-	private static function after_movement( $product_id ) {
+	public static function after_movement( $product_id ) {
 		update_post_meta( $product_id, self::META_TRACKED, '1' );
 		if ( class_exists( 'BS_Stock_Sync' ) ) {
 			BS_Stock_Sync::push( $product_id );
@@ -771,7 +878,7 @@ class BS_Stock_Ledger {
 			$ids,
 			self::meta_ids( self::META_BARCODE, $query, true, $limit ),
 			self::meta_ids( '_sku', $like, false, $limit ),
-			array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_type IN ('product','product_variation') AND post_status = 'publish' AND post_title LIKE %s LIMIT %d", $like, $limit ) ) )
+			array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_type IN ('product','product_variation') AND post_status IN ('publish','private') AND post_title LIKE %s LIMIT %d", $like, $limit ) ) )
 		);
 
 		$unique  = array();
@@ -810,7 +917,7 @@ class BS_Stock_Ledger {
 
 		$compare = $exact ? '=' : 'LIKE';
 		$sql     = $wpdb->prepare(
-			"SELECT pm.post_id FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE pm.meta_key = %s AND pm.meta_value {$compare} %s AND p.post_type IN ('product','product_variation') AND p.post_status = 'publish' LIMIT %d",
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE pm.meta_key = %s AND pm.meta_value {$compare} %s AND p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','private') LIMIT %d",
 			$meta_key,
 			$value,
 			$limit
@@ -848,12 +955,29 @@ class BS_Stock_Ledger {
 	 * @param int    $product_id Product id.
 	 * @param string $barcode Barcode. Empty clears it.
 	 * @param mixed  $low_stock Threshold. Null leaves it, empty string clears it.
+	 * @param array  $extra Optional sundry (bool), unit (string), cost (empty string clears).
 	 * @return array|WP_Error
 	 */
-	public static function update_product_meta( $product_id, $barcode, $low_stock ) {
+	public static function update_product_meta( $product_id, $barcode, $low_stock, $extra = array() ) {
 		$payload = self::get_product( $product_id );
 		if ( is_wp_error( $payload ) ) {
 			return $payload;
+		}
+
+		$unit = null;
+		if ( array_key_exists( 'unit', $extra ) ) {
+			$unit = trim( sanitize_text_field( (string) $extra['unit'] ) );
+			if ( strlen( $unit ) > 16 ) {
+				return new WP_Error( 'bs_stock_unit', 'Keep the unit short, like L, ml, each, or m.', array( 'status' => 400 ) );
+			}
+		}
+
+		$cost = null;
+		if ( array_key_exists( 'cost', $extra ) && null !== $extra['cost'] && '' !== $extra['cost'] ) {
+			if ( ! is_numeric( $extra['cost'] ) || (float) $extra['cost'] < 0 || (float) $extra['cost'] > 10000000 ) {
+				return new WP_Error( 'bs_stock_cost', 'Enter a cost price in rand, or leave it blank.', array( 'status' => 400 ) );
+			}
+			$cost = number_format( round( (float) $extra['cost'], 2 ), 2, '.', '' );
 		}
 
 		if ( null !== $barcode ) {
@@ -883,6 +1007,30 @@ class BS_Stock_Ledger {
 					return new WP_Error( 'bs_stock_low', 'Enter a low-stock number, or leave it blank.', array( 'status' => 400 ) );
 				}
 				update_post_meta( $product_id, self::META_LOW, self::format_qty( $qty ) );
+			}
+		}
+
+		if ( array_key_exists( 'sundry', $extra ) ) {
+			if ( $extra['sundry'] ) {
+				update_post_meta( $product_id, self::META_SUNDRY, '1' );
+			} else {
+				delete_post_meta( $product_id, self::META_SUNDRY );
+			}
+		}
+
+		if ( null !== $unit ) {
+			if ( '' === $unit ) {
+				delete_post_meta( $product_id, self::META_UNIT );
+			} else {
+				update_post_meta( $product_id, self::META_UNIT, $unit );
+			}
+		}
+
+		if ( array_key_exists( 'cost', $extra ) ) {
+			if ( null === $cost ) {
+				delete_post_meta( $product_id, self::META_COST );
+			} else {
+				update_post_meta( $product_id, self::META_COST, $cost );
 			}
 		}
 
@@ -927,14 +1075,17 @@ class BS_Stock_Ledger {
 	/**
 	 * @param int $product_id Optional product filter.
 	 * @param int $limit Maximum rows.
+	 * @param int $job_id Optional job filter.
 	 * @return array
 	 */
-	public static function movements( $product_id = 0, $limit = 50 ) {
+	public static function movements( $product_id = 0, $limit = 50, $job_id = 0 ) {
 		global $wpdb;
 
 		$limit = max( 1, min( 100, (int) $limit ) );
 		$table = self::movements_table();
-		if ( $product_id ) {
+		if ( $job_id ) {
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE job_id = %d ORDER BY id DESC LIMIT %d", $job_id, $limit ) );
+		} elseif ( $product_id ) {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE product_id = %d ORDER BY id DESC LIMIT %d", $product_id, $limit ) );
 		} else {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d", $limit ) );
@@ -1010,6 +1161,9 @@ class BS_Stock_Ledger {
 			'low_stock_threshold' => $threshold,
 			'is_low'              => $tracked && $sellable <= $threshold,
 			'sellable_qty'        => $sellable,
+			'sundry'              => self::is_sundry( $product_id ),
+			'unit'                => self::unit( $product_id ),
+			'cost'                => self::unit_cost( $product_id ),
 			'locations'           => $places,
 			'shop'                => array(
 				'manage_stock'   => (bool) $product->get_manage_stock(),
@@ -1032,6 +1186,7 @@ class BS_Stock_Ledger {
 		$location = self::get_location( (int) $row->location_id );
 		$user     = $row->user_id ? get_userdata( (int) $row->user_id ) : false;
 		$when     = mysql2date( 'j M Y, H:i', $row->created_at );
+		$job_id   = isset( $row->job_id ) ? (int) $row->job_id : 0;
 
 		return array(
 			'id'             => (int) $row->id,
@@ -1050,6 +1205,8 @@ class BS_Stock_Ledger {
 			'user_name'      => $user ? $user->display_name : ( $row->order_id ? 'Website order' : 'Stock' ),
 			'order_id'       => (int) $row->order_id,
 			'order_item_id'  => (int) $row->order_item_id,
+			'job_id'         => $job_id,
+			'job_number'     => $job_id && class_exists( 'BS_Stock_Jobs' ) ? BS_Stock_Jobs::number_for( $job_id ) : '',
 			'created_at'     => $row->created_at,
 			'created_label'  => $when ? $when : $row->created_at,
 		);
@@ -1092,17 +1249,17 @@ class BS_Stock_Ledger {
 		return $out;
 	}
 
-	private static function begin() {
+	public static function begin() {
 		global $wpdb;
 		$wpdb->query( 'START TRANSACTION' );
 	}
 
-	private static function commit() {
+	public static function commit() {
 		global $wpdb;
 		$wpdb->query( 'COMMIT' );
 	}
 
-	private static function rollback() {
+	public static function rollback() {
 		global $wpdb;
 		$wpdb->query( 'ROLLBACK' );
 	}

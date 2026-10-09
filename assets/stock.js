@@ -90,6 +90,9 @@
     const hash = location.hash || "#/";
     const product = hash.match(/^#\/p\/(\d+)/);
     if (product) return { name: "product", id: Number(product[1]) };
+    const job = hash.match(/^#\/job\/(\d+)/);
+    if (job) return { name: "job", id: Number(job[1]) };
+    if (hash.indexOf("#/jobs") === 0) return { name: "jobs" };
     if (hash.indexOf("#/low") === 0) return { name: "low" };
     if (hash.indexOf("#/activity") === 0) return { name: "activity" };
     if (hash.indexOf("#/settings") === 0) return { name: "settings" };
@@ -99,13 +102,15 @@
   function paintNav(name) {
     const items = [
       ["search", "Search", "#/"],
+      ["jobs", "Jobs", "#/jobs"],
       ["low", "Low stock", "#/low"],
       ["activity", "Activity", "#/activity"],
       ["settings", "Settings", "#/settings"]
     ];
+    const current = name === "job" ? "jobs" : name;
     nav.replaceChildren();
     items.forEach(function (item) {
-      const link = h("a", { href: item[2], class: name === item[0] ? "on" : "" }, [item[1]]);
+      const link = h("a", { href: item[2], class: current === item[0] ? "on" : "" }, [item[1]]);
       if (item[0] === "low" && state.lowCount > 0) {
         link.appendChild(h("span", { class: "badge", text: String(state.lowCount) }));
       }
@@ -121,7 +126,7 @@
     try { current.clear(); } catch (e) { /* already cleared */ }
   }
 
-  async function openScanner() {
+  async function openScanner(onCode) {
     await stopScanner();
     let panel = document.getElementById("scanner");
     if (!panel) {
@@ -150,6 +155,11 @@
         function (text) {
           if (scanHandled) return;
           scanHandled = true;
+          if (typeof onCode === "function") {
+            closeScanner();
+            onCode(text);
+            return;
+          }
           const input = document.getElementById("q");
           state.query = text;
           if (input) input.value = text;
@@ -309,6 +319,18 @@
       value: product.low_stock_override == null ? "" : formatQty(product.low_stock_override),
       placeholder: state.settings ? "Shop default " + formatQty(state.settings.default_low) : ""
     });
+    const sundry = h("input", { id: "sundry", type: "checkbox" });
+    sundry.checked = !!product.sundry;
+    const unit = h("input", { id: "unit", type: "text", maxlength: "16", value: product.unit || "", placeholder: "each, L, ml, m" });
+    const cost = h("input", {
+      id: "cost",
+      type: "number",
+      inputmode: "decimal",
+      min: "0",
+      step: "0.01",
+      value: product.cost == null ? "" : Number(product.cost).toFixed(2),
+      placeholder: "Not set"
+    });
 
     const card = h("article", { class: "card" }, [
       h("button", { type: "button", class: "texty", text: "Back to search", onclick: function () { location.hash = "#/"; } }),
@@ -345,6 +367,9 @@
 
     card.appendChild(h("label", {}, ["Barcode", barcode]));
     card.appendChild(h("label", {}, ["Low stock at", low]));
+    card.appendChild(h("label", { class: "check" }, [sundry, "Workshop sundry (oil, grease, cable ties…)"]));
+    card.appendChild(h("label", {}, ["Unit", unit]));
+    card.appendChild(h("label", {}, ["Cost price (R per unit, excl. VAT)", cost]));
     card.appendChild(h("button", { type: "button", class: "secondary", text: "Save details", onclick: function () { saveDetails(product); } }));
     if (product.permalink && /^https?:\/\//.test(product.permalink)) {
       card.appendChild(h("a", { class: "quiet", href: product.permalink, target: "_blank", rel: "noopener", text: "View on the shop" }));
@@ -395,13 +420,19 @@
   async function saveDetails(product) {
     const barcode = document.getElementById("barcode");
     const low = document.getElementById("low");
+    const sundry = document.getElementById("sundry");
+    const unit = document.getElementById("unit");
+    const cost = document.getElementById("cost");
     try {
       const data = await api("product", {
         method: "POST",
         body: {
           product_id: product.id,
           barcode: barcode ? barcode.value : "",
-          low_stock: low && low.value !== "" ? low.value : ""
+          low_stock: low && low.value !== "" ? low.value : "",
+          sundry: sundry ? sundry.checked : false,
+          unit: unit ? unit.value : "",
+          cost: cost ? cost.value : ""
         }
       });
       showToast("Details saved.");
@@ -559,7 +590,7 @@
       ]));
     });
 
-    view.replaceChildren(h("div", { class: "stack" }, [
+    const page = h("div", { class: "stack" }, [
       h("section", { class: "card" }, [
         h("h2", { text: "Shop" }),
         h("label", { class: "check" }, [publish, "Publish stock to the shop"]),
@@ -610,7 +641,9 @@
           h("button", { type: "submit", class: "primary", text: "Add location" })
         ])
       ])
-    ]));
+    ]);
+    view.replaceChildren(page);
+    if (window.BSStock.jobs) window.BSStock.jobs.settings(page);
   }
 
   async function updateLocation(id, fields) {
@@ -635,6 +668,11 @@
     }
     if (current.name === "search") renderSearch();
     else if (current.name === "product") renderProduct(current.id);
+    else if (current.name === "jobs" || current.name === "job") {
+      if (!window.BSStock.jobs) view.appendChild(h("p", { class: "error", text: "Jobs did not load. Refresh the page." }));
+      else if (current.name === "jobs") window.BSStock.jobs.list();
+      else window.BSStock.jobs.job(current.id);
+    }
     else if (current.name === "low") renderLow();
     else if (current.name === "activity") renderActivity();
     else renderSettings();
@@ -655,6 +693,23 @@
     await render();
   }
 
+  window.BSStock = {
+    h: h,
+    api: api,
+    view: view,
+    state: state,
+    route: route,
+    formatQty: formatQty,
+    formatDelta: formatDelta,
+    showToast: showToast,
+    openScanner: openScanner,
+    closeScanner: closeScanner,
+    stopScanner: stopScanner,
+    refreshLowCount: refreshLowCount,
+    jobs: null
+  };
+
   window.addEventListener("hashchange", render);
-  boot();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
 })();
