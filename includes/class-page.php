@@ -85,6 +85,7 @@ class BS_Stock_Page {
 
 		$css  = BS_STOCK_URL . 'assets/stock.css?ver=' . BS_STOCK_VERSION;
 		$js   = BS_STOCK_URL . 'assets/stock.js?ver=' . BS_STOCK_VERSION;
+		$jobs = BS_STOCK_URL . 'assets/jobs.js?ver=' . BS_STOCK_VERSION;
 		$scan = BS_STOCK_URL . 'assets/html5-qrcode.min.js?ver=2.3.8';
 		$icon = BS_STOCK_URL . 'assets/icon-192.png';
 		$user = wp_get_current_user();
@@ -93,6 +94,8 @@ class BS_Stock_Page {
 			'root'   => esc_url_raw( rest_url( BS_Stock_API::NAMESPACE . '/' ) ),
 			'nonce'  => wp_create_nonce( 'wp_rest' ),
 			'user'   => $user->display_name,
+			'userId' => (int) $user->ID,
+			'today'  => current_time( 'Y-m-d' ),
 			'logout' => wp_logout_url( home_url( '/stock/' ) ),
 		);
 
@@ -135,6 +138,7 @@ class BS_Stock_Page {
 	<script>window.BS_STOCK = <?php echo wp_json_encode( $config ); ?>;</script>
 	<script src="<?php echo esc_url( $scan ); ?>" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js';"></script>
 	<script src="<?php echo esc_url( $js ); ?>"></script>
+	<script src="<?php echo esc_url( $jobs ); ?>"></script>
 </body>
 </html>
 		<?php

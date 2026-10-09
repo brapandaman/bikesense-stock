@@ -63,7 +63,42 @@ class BS_Stock_Sync {
 			'publish'     => self::publishing(),
 			'default_low' => (float) get_option( 'bikesense_stock_default_low', 1 ),
 			'locations'   => $locations,
+			'labour'      => class_exists( 'BS_Stock_Jobs' ) ? BS_Stock_Jobs::default_rates() : array(),
 		);
+	}
+
+	/**
+	 * Orders made from job cards never move stock. The job already booked it out.
+	 *
+	 * @param bool     $can Whether WooCommerce may change stock for the order.
+	 * @param WC_Order $order Order.
+	 * @return bool
+	 */
+	public static function order_stock_allowed( $can, $order ) {
+		return self::is_job_order( $order ) ? false : $can;
+	}
+
+	/**
+	 * Keep WooCommerce from flagging a job order as stock-reduced, so cancelling it later restores nothing.
+	 *
+	 * @param bool $trigger Whether to reduce stock on payment.
+	 * @param int  $order_id Order id.
+	 * @return bool
+	 */
+	public static function order_reduce_trigger( $trigger, $order_id ) {
+		if ( function_exists( 'wc_get_order' ) && self::is_job_order( wc_get_order( $order_id ) ) ) {
+			return false;
+		}
+
+		return $trigger;
+	}
+
+	/**
+	 * @param mixed $order Order.
+	 * @return bool
+	 */
+	public static function is_job_order( $order ) {
+		return is_object( $order ) && method_exists( $order, 'get_meta' ) && class_exists( 'BS_Stock_Jobs' ) && (int) $order->get_meta( BS_Stock_Jobs::ORDER_META_JOB, true ) > 0;
 	}
 
 	/**
@@ -192,7 +227,7 @@ class BS_Stock_Sync {
 	 * @param string                $direction out or in.
 	 */
 	private static function on_order_item( $item, $change, $order, $direction ) {
-		if ( self::$pushing || ! is_object( $item ) || ! is_object( $order ) || ! method_exists( $item, 'get_product' ) ) {
+		if ( self::$pushing || ! is_object( $item ) || ! is_object( $order ) || ! method_exists( $item, 'get_product' ) || self::is_job_order( $order ) ) {
 			return;
 		}
 

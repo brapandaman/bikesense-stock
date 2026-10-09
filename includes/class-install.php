@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class BS_Stock_Install {
 
-	const DB_VERSION = '1';
+	const DB_VERSION = '2';
 
 	/**
 	 * Create tables, defaults, and the first location.
@@ -36,9 +36,12 @@ class BS_Stock_Install {
 	public static function maybe_upgrade() {
 		global $wpdb;
 
-		$table = $wpdb->prefix . 'bs_stock_locations';
-		$ready = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table;
-		if ( $ready && self::DB_VERSION === get_option( 'bikesense_stock_db_version' ) ) {
+		$table   = $wpdb->prefix . 'bs_stock_locations';
+		$jobs    = $wpdb->prefix . 'bs_stock_jobs';
+		$ready   = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table
+			&& $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $jobs ) ) === $jobs;
+		$current = (string) get_option( 'bikesense_stock_db_version', '0' );
+		if ( $ready && version_compare( $current, self::DB_VERSION, '>=' ) ) {
 			if ( get_option( 'bikesense_stock_rewrite' ) !== BS_STOCK_VERSION ) {
 				BS_Stock_Page::register_rewrite();
 				flush_rewrite_rules();
@@ -65,6 +68,9 @@ class BS_Stock_Install {
 		$locations  = $wpdb->prefix . 'bs_stock_locations';
 		$balances   = $wpdb->prefix . 'bs_stock_balances';
 		$movements  = $wpdb->prefix . 'bs_stock_movements';
+		$jobs       = $wpdb->prefix . 'bs_stock_jobs';
+		$lines      = $wpdb->prefix . 'bs_stock_job_lines';
+		$labour     = $wpdb->prefix . 'bs_stock_job_labour';
 
 		$sql = "CREATE TABLE {$locations} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -97,6 +103,7 @@ class BS_Stock_Install {
 			user_id bigint(20) unsigned NOT NULL DEFAULT 0,
 			order_id bigint(20) unsigned NOT NULL DEFAULT 0,
 			order_item_id bigint(20) unsigned NOT NULL DEFAULT 0,
+			job_id bigint(20) unsigned NULL,
 			source_key varchar(80) NULL,
 			created_at datetime NOT NULL,
 			PRIMARY KEY  (id),
@@ -104,13 +111,76 @@ class BS_Stock_Install {
 			KEY location_id (location_id),
 			KEY created_at (created_at),
 			KEY source_key (source_key),
-			KEY order_item (order_id, order_item_id)
+			KEY order_item (order_id, order_item_id),
+			KEY job_id (job_id)
+		) {$charset};
+		CREATE TABLE {$jobs} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			job_number varchar(20) NOT NULL,
+			status varchar(20) NOT NULL DEFAULT 'open',
+			customer_name varchar(191) NOT NULL DEFAULT '',
+			customer_phone varchar(40) NOT NULL DEFAULT '',
+			customer_email varchar(191) NOT NULL DEFAULT '',
+			bike_make varchar(64) NOT NULL DEFAULT '',
+			bike_model varchar(100) NOT NULL DEFAULT '',
+			bike_year varchar(4) NOT NULL DEFAULT '',
+			registration varchar(32) NOT NULL DEFAULT '',
+			vin varchar(64) NOT NULL DEFAULT '',
+			odometer int(10) unsigned NULL,
+			description text NULL,
+			notes text NULL,
+			mechanic_ids varchar(191) NOT NULL DEFAULT '',
+			order_id bigint(20) unsigned NOT NULL DEFAULT 0,
+			created_by bigint(20) unsigned NOT NULL DEFAULT 0,
+			created_at datetime NOT NULL,
+			updated_at datetime NOT NULL,
+			completed_by bigint(20) unsigned NOT NULL DEFAULT 0,
+			completed_at datetime NULL,
+			cancelled_at datetime NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY job_number (job_number),
+			KEY status (status),
+			KEY registration (registration),
+			KEY created_at (created_at)
+		) {$charset};
+		CREATE TABLE {$lines} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			job_id bigint(20) unsigned NOT NULL,
+			product_id bigint(20) unsigned NOT NULL,
+			kind varchar(10) NOT NULL DEFAULT 'part',
+			qty decimal(12,2) NOT NULL DEFAULT 0,
+			unit_cost decimal(12,2) NULL,
+			unit_price decimal(12,2) NOT NULL DEFAULT 0,
+			location_id bigint(20) unsigned NOT NULL,
+			created_by bigint(20) unsigned NOT NULL DEFAULT 0,
+			created_at datetime NOT NULL,
+			updated_at datetime NOT NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY job_product_location (job_id, product_id, location_id),
+			KEY product_id (product_id)
+		) {$charset};
+		CREATE TABLE {$labour} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			job_id bigint(20) unsigned NOT NULL,
+			user_id bigint(20) unsigned NOT NULL,
+			work_date date NOT NULL,
+			hours decimal(8,2) NOT NULL DEFAULT 0,
+			cost_rate decimal(10,2) NULL,
+			charge_rate decimal(10,2) NULL,
+			note varchar(500) NOT NULL DEFAULT '',
+			created_by bigint(20) unsigned NOT NULL DEFAULT 0,
+			created_at datetime NOT NULL,
+			PRIMARY KEY  (id),
+			KEY job_id (job_id),
+			KEY user_id (user_id)
 		) {$charset};";
 
 		dbDelta( $sql );
 
 		add_option( 'bikesense_stock_publish', '0' );
 		add_option( 'bikesense_stock_default_low', '1' );
+		add_option( 'bikesense_stock_labour_cost_rate', '' );
+		add_option( 'bikesense_stock_labour_charge_rate', '' );
 		update_option( 'bikesense_stock_db_version', self::DB_VERSION );
 
 		self::seed_pretoria();

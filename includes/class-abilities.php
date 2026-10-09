@@ -20,7 +20,7 @@ class BS_Stock_Abilities {
 			'bikesense-stock',
 			array(
 				'label'       => __( 'Bike Sense stock', 'bikesense-stock' ),
-				'description' => __( 'Read quantities, low stock, and the movement ledger.', 'bikesense-stock' ),
+				'description' => __( 'Read quantities, low stock, the movement ledger, and workshop job cards.', 'bikesense-stock' ),
 			)
 		);
 	}
@@ -115,6 +115,80 @@ class BS_Stock_Abilities {
 			array( __CLASS__, 'movements' ),
 			$read
 		);
+
+		self::add(
+			'bikesense-stock/jobs',
+			__( 'List workshop jobs', 'bikesense-stock' ),
+			__( 'List Bike Sense workshop job cards, newest first. Filter by status (open, in_progress, waiting_parts, completed, invoiced, cancelled, or active for jobs being worked on) and search by customer, phone, registration, VIN, bike, or job number. Does not change anything.', 'bikesense-stock' ),
+			array(
+				'type'       => 'object',
+				'properties' => array(
+					'status' => array(
+						'type'        => 'string',
+						'description' => __( 'Job status, active, or empty for all.', 'bikesense-stock' ),
+					),
+					'q'      => array(
+						'type'        => 'string',
+						'description' => __( 'Customer name, phone, registration, VIN, bike, or job number such as JC-0007.', 'bikesense-stock' ),
+					),
+					'limit'  => array(
+						'type'        => 'integer',
+						'description' => __( 'How many jobs to return, up to 100.', 'bikesense-stock' ),
+					),
+				),
+				'additionalProperties' => true,
+			),
+			array( __CLASS__, 'jobs' ),
+			$read
+		);
+
+		self::add(
+			'bikesense-stock/job',
+			__( 'Get one workshop job', 'bikesense-stock' ),
+			__( 'Get one Bike Sense job card by job number (JC-0007) or id: customer, bike, status, parts and sundries used, labour, costing, stock movements, and a plain-English summary to read back when the job is finished. Does not change anything.', 'bikesense-stock' ),
+			array(
+				'type'       => 'object',
+				'properties' => array(
+					'number' => array(
+						'type'        => 'string',
+						'description' => __( 'Job number such as JC-0007.', 'bikesense-stock' ),
+					),
+					'id'     => array(
+						'type'        => 'integer',
+						'description' => __( 'Job id.', 'bikesense-stock' ),
+					),
+				),
+				'additionalProperties' => true,
+			),
+			array( __CLASS__, 'job' ),
+			$read
+		);
+
+		self::add(
+			'bikesense-stock/job-costing',
+			__( 'Workshop job costing', 'bikesense-stock' ),
+			__( 'Totals for Bike Sense workshop jobs in a date range: job count, parts, sundries, and labour cost and charge, gross profit, and margin. Jobs are dated by completion, or by opening when not completed. Cancelled jobs are left out unless status is all. Does not change anything.', 'bikesense-stock' ),
+			array(
+				'type'       => 'object',
+				'properties' => array(
+					'from'   => array(
+						'type'        => 'string',
+						'description' => __( 'Start date YYYY-MM-DD. Defaults to the first of this month.', 'bikesense-stock' ),
+					),
+					'to'     => array(
+						'type'        => 'string',
+						'description' => __( 'End date YYYY-MM-DD. Defaults to today.', 'bikesense-stock' ),
+					),
+					'status' => array(
+						'type'        => 'string',
+						'description' => __( 'Optional job status, active, or all.', 'bikesense-stock' ),
+					),
+				),
+				'additionalProperties' => true,
+			),
+			array( __CLASS__, 'job_costing' ),
+			$read
+		);
 	}
 
 	/**
@@ -206,5 +280,46 @@ class BS_Stock_Abilities {
 
 		$limit = isset( $input['limit'] ) ? (int) $input['limit'] : 50;
 		return BS_Stock_Ledger::movements( $product_id, $limit );
+	}
+
+	/**
+	 * @param mixed $input Ability input.
+	 * @return array|WP_Error
+	 */
+	public static function jobs( $input ) {
+		$input = is_array( $input ) ? $input : array();
+		return BS_Stock_Jobs::list_jobs(
+			isset( $input['status'] ) && is_scalar( $input['status'] ) ? (string) $input['status'] : '',
+			isset( $input['q'] ) && is_scalar( $input['q'] ) ? (string) $input['q'] : '',
+			isset( $input['limit'] ) ? (int) $input['limit'] : 30
+		);
+	}
+
+	/**
+	 * @param mixed $input Ability input.
+	 * @return array|WP_Error
+	 */
+	public static function job( $input ) {
+		$input  = is_array( $input ) ? $input : array();
+		$id     = isset( $input['id'] ) ? (int) $input['id'] : 0;
+		$number = isset( $input['number'] ) && is_scalar( $input['number'] ) ? (string) $input['number'] : '';
+		if ( ! $id && '' === trim( $number ) ) {
+			return new WP_Error( 'bs_stock_query', __( 'Pass a job number such as JC-0007, or a job id.', 'bikesense-stock' ) );
+		}
+
+		return BS_Stock_Jobs::get( $id, $number );
+	}
+
+	/**
+	 * @param mixed $input Ability input.
+	 * @return array|WP_Error
+	 */
+	public static function job_costing( $input ) {
+		$input = is_array( $input ) ? $input : array();
+		return BS_Stock_Jobs::costing_report(
+			isset( $input['from'] ) && is_scalar( $input['from'] ) ? (string) $input['from'] : '',
+			isset( $input['to'] ) && is_scalar( $input['to'] ) ? (string) $input['to'] : '',
+			isset( $input['status'] ) && is_scalar( $input['status'] ) ? (string) $input['status'] : ''
+		);
 	}
 }
