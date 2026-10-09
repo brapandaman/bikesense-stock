@@ -21,6 +21,9 @@ class BS_Stock_Jobs {
 	 */
 	private static $numbers = array();
 
+	/** @var array<int, bool> Jobs locked through the option fallback instead of GET_LOCK. */
+	private static $option_locks = array();
+
 	/**
 	 * @return string
 	 */
@@ -1549,7 +1552,36 @@ class BS_Stock_Jobs {
 	 */
 	private static function lock( $job_id ) {
 		global $wpdb;
-		return '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $wpdb->prefix . 'bs_stock_job_' . (int) $job_id ) );
+		$job_id     = (int) $job_id;
+		$suppressed = $wpdb->suppress_errors( true );
+		$got        = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $wpdb->prefix . 'bs_stock_job_' . $job_id ) );
+		$wpdb->suppress_errors( $suppressed );
+		if ( '1' === (string) $got ) {
+			self::$option_locks[ $job_id ] = false;
+			return true;
+		}
+		if ( '0' === (string) $got ) {
+			return false;
+		}
+
+		// GET_LOCK is MySQL-only. add_option() is atomic on the unique option_name key.
+		$key      = 'bs_stock_job_lock_' . $job_id;
+		$deadline = microtime( true ) + 10;
+		do {
+			if ( add_option( $key, time(), '', 'no' ) ) {
+				self::$option_locks[ $job_id ] = true;
+				return true;
+			}
+			wp_cache_delete( $key, 'options' );
+			$since = (int) get_option( $key, 0 );
+			if ( $since && $since < time() - 60 ) {
+				delete_option( $key );
+				continue;
+			}
+			usleep( 200000 );
+		} while ( microtime( true ) < $deadline );
+
+		return false;
 	}
 
 	/**
@@ -1557,7 +1589,13 @@ class BS_Stock_Jobs {
 	 */
 	private static function unlock( $job_id ) {
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $wpdb->prefix . 'bs_stock_job_' . (int) $job_id ) );
+		$job_id = (int) $job_id;
+		if ( ! empty( self::$option_locks[ $job_id ] ) ) {
+			delete_option( 'bs_stock_job_lock_' . $job_id );
+		} else {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $wpdb->prefix . 'bs_stock_job_' . $job_id ) );
+		}
+		unset( self::$option_locks[ $job_id ] );
 	}
 
 	/**

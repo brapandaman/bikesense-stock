@@ -200,6 +200,11 @@ class BS_Stock_Abilities {
 	 * @param array    $annotations Annotations.
 	 */
 	private static function add( $name, $label, $description, $input_schema, $callback, $annotations ) {
+		if ( empty( $input_schema['required'] ) && ! array_key_exists( 'default', $input_schema ) ) {
+			// Without a default, a bot calling with no input sends null and fails the object type check.
+			$input_schema['default'] = array();
+		}
+
 		wp_register_ability(
 			$name,
 			array(
