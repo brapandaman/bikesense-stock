@@ -93,6 +93,7 @@
     const job = hash.match(/^#\/job\/(\d+)/);
     if (job) return { name: "job", id: Number(job[1]) };
     if (hash.indexOf("#/jobs") === 0) return { name: "jobs" };
+    if (hash.indexOf("#/specials") === 0) return { name: "specials" };
     if (hash.indexOf("#/low") === 0) return { name: "low" };
     if (hash.indexOf("#/activity") === 0) return { name: "activity" };
     if (hash.indexOf("#/settings") === 0) return { name: "settings" };
@@ -103,6 +104,7 @@
     const items = [
       ["search", "Search", "#/"],
       ["jobs", "Jobs", "#/jobs"],
+      ["specials", "Specials", "#/specials"],
       ["low", "Low stock", "#/low"],
       ["activity", "Activity", "#/activity"],
       ["settings", "Settings", "#/settings"]
@@ -591,6 +593,7 @@
     });
 
     const page = h("div", { class: "stack" }, [
+      intakeSettingsCard(settings),
       h("section", { class: "card" }, [
         h("h2", { text: "Shop" }),
         h("label", { class: "check" }, [publish, "Publish stock to the shop"]),
@@ -660,6 +663,7 @@
   async function render() {
     await stopScanner();
     const current = route();
+    if (current.name !== "settings") state.intakeSecret = "";
     paintNav(current.name);
     view.replaceChildren();
     if (state.bootError && !state.settings && current.name !== "search") {
@@ -675,7 +679,115 @@
     }
     else if (current.name === "low") renderLow();
     else if (current.name === "activity") renderActivity();
+    else if (current.name === "specials") renderSpecials();
     else renderSettings();
+  }
+
+  function intakeSettingsCard(settings) {
+    const secretBox = h("div", { class: "stack" });
+    const ready = !!settings.intake_ready;
+
+    function showSecret(secret) {
+      const input = h("input", {
+        type: "text",
+        readonly: "readonly",
+        value: secret,
+        autocomplete: "off",
+        spellcheck: "false"
+      });
+      secretBox.replaceChildren(
+        h("p", { class: "warning", text: "Paste this into the Apps Script. Anyone with it can add specials." }),
+        input,
+        h("button", {
+          type: "button",
+          class: "secondary",
+          text: "Copy secret",
+          onclick: async function () {
+            try {
+              if (navigator.clipboard) await navigator.clipboard.writeText(secret);
+              else input.select();
+              showToast("Secret copied.");
+            } catch (err) {
+              input.select();
+              showToast("Select the secret and copy it.");
+            }
+          }
+        })
+      );
+    }
+
+    if (state.intakeSecret) showSecret(state.intakeSecret);
+
+    async function loadSecret(rotate) {
+      if (rotate && ready && !window.confirm("Replace the intake secret? The Apps Script will fail until you paste the new one.")) return;
+      try {
+        const data = await api("intake-secret", { method: "POST", body: { rotate: !!rotate } });
+        state.settings.intake_ready = true;
+        state.intakeSecret = data.secret || "";
+        showToast(rotate ? "New intake secret created." : "Intake secret shown.");
+        renderSettings();
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    return h("section", { class: "card" }, [
+      h("h2", { text: "Email intake" }),
+      h("p", { class: "muted", text: "Label plain-text specials in Gmail as Client Intake and leave them unread. The Apps Script posts them to " + BS_STOCK.root + "intake every hour. Paste the secret into intake/client-intake.gs, then add an hourly trigger for processClientIntake." }),
+      h("p", { class: "muted", text: ready ? "A secret is set." : "No secret yet. Create one before the script can log specials." }),
+      h("div", { class: "actions" }, [
+        h("button", {
+          type: "button",
+          class: ready ? "secondary" : "primary",
+          text: ready ? "Show secret" : "Create intake secret",
+          onclick: function () { loadSecret(!ready); }
+        }),
+        ready ? h("button", {
+          type: "button",
+          class: "warn",
+          text: "Replace secret",
+          onclick: function () { loadSecret(true); }
+        }) : null
+      ]),
+      secretBox
+    ]);
+  }
+
+  async function renderSpecials() {
+    view.appendChild(h("p", { class: "muted", text: "Loading specials…" }));
+    try {
+      const data = await api("intakes");
+      const page = h("div", { class: "stack" }, [
+        h("section", { class: "card" }, [
+          h("h2", { text: "Email specials" }),
+          h("p", {
+            class: "muted",
+            text: data.ready
+              ? "Unread Gmail labelled Client Intake is logged here."
+              : "Create an intake secret in Settings, paste it into the Apps Script, and label those emails Client Intake."
+          })
+        ])
+      ]);
+      const items = data.items || [];
+      if (!items.length) page.appendChild(h("p", { class: "muted", text: "No specials yet." }));
+      items.forEach(function (item) {
+        const bikeParts = item.bike || {};
+        const bike = [bikeParts.make, bikeParts.model, bikeParts.year].filter(Boolean).join(" ");
+        const phone = String(item.phone || "").replace(/[^\d+]/g, "");
+        page.appendChild(h("article", { class: "card" }, [
+          h("strong", { text: item.name || "Unnamed" }),
+          phone ? h("a", { class: "quiet", href: "tel:" + phone, text: item.phone }) : null,
+          item.email ? h("a", { class: "quiet", href: "mailto:" + item.email, text: item.email }) : null,
+          bike ? h("span", { text: bike }) : null,
+          bikeParts.vin ? h("span", { class: "muted", text: "VIN " + bikeParts.vin }) : null,
+          item.reason ? h("p", { class: "prewrap", text: item.reason }) : null,
+          h("span", { class: "muted", text: item.created_label || "" })
+        ]));
+      });
+      view.replaceChildren(page);
+    } catch (err) {
+      view.replaceChildren(h("p", { class: "error", text: err.message }));
+    }
   }
 
   async function boot() {

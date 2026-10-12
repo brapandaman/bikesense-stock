@@ -60,10 +60,11 @@ class BS_Stock_Sync {
 		}
 
 		return array(
-			'publish'     => self::publishing(),
-			'default_low' => (float) get_option( 'bikesense_stock_default_low', 1 ),
-			'locations'   => $locations,
-			'labour'      => class_exists( 'BS_Stock_Jobs' ) ? BS_Stock_Jobs::default_rates() : array(),
+			'publish'      => self::publishing(),
+			'default_low'  => (float) get_option( 'bikesense_stock_default_low', 1 ),
+			'locations'    => $locations,
+			'labour'       => class_exists( 'BS_Stock_Jobs' ) ? BS_Stock_Jobs::default_rates() : array(),
+			'intake_ready' => class_exists( 'BS_Stock_Intake' ) && BS_Stock_Intake::ready(),
 		);
 	}
 

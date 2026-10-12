@@ -163,6 +163,33 @@ class BS_Stock_API {
 		}
 		register_rest_route(
 			self::NAMESPACE,
+			'/intake',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( 'BS_Stock_Intake', 'log' ),
+				'permission_callback' => array( 'BS_Stock_Intake', 'authorize' ),
+			)
+		);
+		register_rest_route(
+			self::NAMESPACE,
+			'/intakes',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( 'BS_Stock_Intake', 'list_items' ),
+				'permission_callback' => array( __CLASS__, 'can_read' ),
+			)
+		);
+		register_rest_route(
+			self::NAMESPACE,
+			'/intake-secret',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( 'BS_Stock_Intake', 'manage_secret' ),
+				'permission_callback' => array( __CLASS__, 'can_write' ),
+			)
+		);
+		register_rest_route(
+			self::NAMESPACE,
 			'/mechanics',
 			array(
 				array(
