@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class BS_Stock_Install {
 
-	const DB_VERSION = '2';
+	const DB_VERSION = '3';
 
 	/**
 	 * Create tables, defaults, and the first location.
@@ -71,6 +71,7 @@ class BS_Stock_Install {
 		$jobs       = $wpdb->prefix . 'bs_stock_jobs';
 		$lines      = $wpdb->prefix . 'bs_stock_job_lines';
 		$labour     = $wpdb->prefix . 'bs_stock_job_labour';
+		$intakes    = $wpdb->prefix . 'bs_stock_intakes';
 
 		$sql = "CREATE TABLE {$locations} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -173,6 +174,25 @@ class BS_Stock_Install {
 			PRIMARY KEY  (id),
 			KEY job_id (job_id),
 			KEY user_id (user_id)
+		) {$charset};
+		CREATE TABLE {$intakes} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			public_id varchar(32) NOT NULL,
+			message_id varchar(64) NULL,
+			customer_name varchar(191) NOT NULL DEFAULT '',
+			customer_phone varchar(40) NOT NULL DEFAULT '',
+			customer_email varchar(191) NOT NULL DEFAULT '',
+			bike_make varchar(64) NOT NULL DEFAULT '',
+			bike_model varchar(100) NOT NULL DEFAULT '',
+			bike_year varchar(4) NOT NULL DEFAULT '',
+			vin varchar(64) NOT NULL DEFAULT '',
+			reason varchar(500) NOT NULL DEFAULT '',
+			source varchar(40) NOT NULL DEFAULT '',
+			created_at datetime NOT NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY public_id (public_id),
+			UNIQUE KEY message_id (message_id),
+			KEY created_at (created_at)
 		) {$charset};";
 
 		dbDelta( $sql );

@@ -12,6 +12,7 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 global $wpdb;
 
 $tables = array(
+	$wpdb->prefix . 'bs_stock_intakes',
 	$wpdb->prefix . 'bs_stock_job_labour',
 	$wpdb->prefix . 'bs_stock_job_lines',
 	$wpdb->prefix . 'bs_stock_jobs',
@@ -30,6 +31,7 @@ delete_option( 'bikesense_stock_db_version' );
 delete_option( 'bikesense_stock_rewrite' );
 delete_option( 'bikesense_stock_labour_cost_rate' );
 delete_option( 'bikesense_stock_labour_charge_rate' );
+delete_option( 'bikesense_stock_intake_secret' );
 
 $wpdb->query(
 	"DELETE FROM {$wpdb->postmeta} WHERE meta_key IN ('_bs_tracked','_bs_barcode','_bs_low_stock','_bs_shop_snapshot','_bs_sundry','_bs_unit','_bs_cost')"
