@@ -1,6 +1,7 @@
 <?php
 /**
  * Logged-in REST API. Reads work with an application password. Writes need the stock page nonce.
+ * Email intake is the exception: a shared secret opens a job and does not change stock.
  *
  * @package BikeSenseStock
  */
@@ -177,6 +178,16 @@ class BS_Stock_API {
 				),
 			)
 		);
+		register_rest_route(
+			self::NAMESPACE,
+			'/intake',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( __CLASS__, 'post_intake' ),
+				'permission_callback' => array( __CLASS__, 'can_intake' ),
+				'show_in_index'       => false,
+			)
+		);
 	}
 
 	/**
@@ -186,6 +197,31 @@ class BS_Stock_API {
 	 */
 	public static function can_read() {
 		return current_user_can( 'manage_woocommerce' );
+	}
+
+	/**
+	 * Gmail intake. Define BS_STOCK_INTAKE_SECRET in wp-config.php, or set the same environment variable.
+	 * At least 32 characters. The placeholder from the setup notes is refused. Never commit the value.
+	 *
+	 * @param WP_REST_Request|null $request Request.
+	 * @return true|WP_Error
+	 */
+	public static function can_intake( $request = null ) {
+		$expected = self::intake_secret();
+		if ( ! self::intake_secret_ok( $expected ) ) {
+			return new WP_Error( 'bs_stock_intake_config', 'Intake is not configured.', array( 'status' => 503 ) );
+		}
+
+		$header = ( $request instanceof WP_REST_Request ) ? $request->get_header( 'x-intake-secret' ) : null;
+		if ( ! is_string( $header ) || '' === $header ) {
+			$header = isset( $_SERVER['HTTP_X_INTAKE_SECRET'] ) ? wp_unslash( $_SERVER['HTTP_X_INTAKE_SECRET'] ) : '';
+		}
+		$provided = is_string( $header ) ? trim( $header ) : '';
+		if ( strlen( $provided ) > 256 || ! hash_equals( $expected, $provided ) ) {
+			return new WP_Error( 'bs_stock_intake_auth', 'Unauthorized.', array( 'status' => 401 ) );
+		}
+
+		return true;
 	}
 
 	/**
@@ -409,6 +445,26 @@ class BS_Stock_API {
 	}
 
 	/**
+	 * Open one workshop job from a Client Intake email. Stock is unchanged.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function post_intake( $request ) {
+		$params = self::params( $request );
+		if ( empty( $params['client'] ) || ! is_array( $params['client'] ) ) {
+			return new WP_Error( 'bs_stock_intake', 'Invalid payload.', array( 'status' => 400 ) );
+		}
+
+		$client = $params['client'];
+		if ( isset( $params['message_id'] ) && is_scalar( $params['message_id'] ) && empty( $client['message_id'] ) ) {
+			$client['message_id'] = (string) $params['message_id'];
+		}
+
+		return self::respond( BS_Stock_Jobs::intake( $client ) );
+	}
+
+	/**
 	 * @param WP_REST_Request $request Request.
 	 * @return WP_REST_Response|WP_Error
 	 */
@@ -534,6 +590,43 @@ class BS_Stock_API {
 				isset( $params['charge_rate'] ) && is_scalar( $params['charge_rate'] ) ? $params['charge_rate'] : ''
 			)
 		);
+	}
+
+	/**
+	 * Constant, else environment. Trimmed. Empty when unset.
+	 *
+	 * @return string
+	 */
+	private static function intake_secret() {
+		$secret = '';
+		if ( defined( 'BS_STOCK_INTAKE_SECRET' ) && is_string( BS_STOCK_INTAKE_SECRET ) ) {
+			$secret = BS_STOCK_INTAKE_SECRET;
+		} else {
+			$env = getenv( 'BS_STOCK_INTAKE_SECRET' );
+			if ( is_string( $env ) && '' !== $env ) {
+				$secret = $env;
+			} elseif ( isset( $_ENV['BS_STOCK_INTAKE_SECRET'] ) && is_string( $_ENV['BS_STOCK_INTAKE_SECRET'] ) ) {
+				$secret = $_ENV['BS_STOCK_INTAKE_SECRET'];
+			} elseif ( isset( $_SERVER['BS_STOCK_INTAKE_SECRET'] ) && is_string( $_SERVER['BS_STOCK_INTAKE_SECRET'] ) ) {
+				$secret = $_SERVER['BS_STOCK_INTAKE_SECRET'];
+			}
+		}
+
+		$secret = trim( $secret );
+		return strlen( $secret ) > 256 ? '' : $secret;
+	}
+
+	/**
+	 * @param string $secret Configured secret.
+	 * @return bool
+	 */
+	private static function intake_secret_ok( $secret ) {
+		$placeholder = 'CHANGE_THIS_TO_A_LONG_RANDOM_STRING';
+		if ( ! is_string( $secret ) || strlen( $secret ) < 32 ) {
+			return false;
+		}
+
+		return ! ( strlen( $secret ) === strlen( $placeholder ) && hash_equals( $placeholder, $secret ) );
 	}
 
 	/**

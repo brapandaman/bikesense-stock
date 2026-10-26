@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bike Sense Stock
  * Description: Private stock taking for Bike Sense. Phone, computer, and bots read one ledger, and counted parts can update the shop.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Bike Sense
  * Requires at least: 6.9
  * Requires PHP: 7.4
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'BS_STOCK_VERSION', '1.1.0' );
+define( 'BS_STOCK_VERSION', '1.2.0' );
 define( 'BS_STOCK_FILE', __FILE__ );
 define( 'BS_STOCK_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BS_STOCK_URL', plugin_dir_url( __FILE__ ) );

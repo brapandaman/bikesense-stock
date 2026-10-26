@@ -145,15 +145,25 @@ class BS_Stock_Jobs {
 	}
 
 	/**
-	 * @param array $fields Header fields.
+	 * @param array  $fields Header fields.
+	 * @param string $intake_key Gmail message id for email intake. Empty when the job is opened in the app.
 	 * @return array|WP_Error
 	 */
-	public static function create( $fields ) {
+	public static function create( $fields, $intake_key = '' ) {
 		global $wpdb;
 
 		$data = self::clean_header( is_array( $fields ) ? $fields : array(), true );
 		if ( is_wp_error( $data ) ) {
 			return $data;
+		}
+
+		$intake_key = self::clean_intake_key( $intake_key );
+		if ( '' !== $intake_key ) {
+			$existing = self::row_by_intake_key( $intake_key );
+			if ( $existing ) {
+				return self::intake_result( $existing, true );
+			}
+			$data['intake_key'] = $intake_key;
 		}
 
 		$now                = current_time( 'mysql' );
@@ -165,6 +175,12 @@ class BS_Stock_Jobs {
 
 		$ok = $wpdb->insert( self::jobs_table(), $data, self::formats( $data ) );
 		if ( ! $ok ) {
+			if ( '' !== $intake_key ) {
+				$existing = self::row_by_intake_key( $intake_key );
+				if ( $existing ) {
+					return self::intake_result( $existing, true );
+				}
+			}
 			return new WP_Error( 'bs_stock_job_save', 'The job could not be saved.', array( 'status' => 500 ) );
 		}
 
@@ -177,6 +193,40 @@ class BS_Stock_Jobs {
 		}
 
 		return self::get( $id );
+	}
+
+	/**
+	 * Open a job from a Client Intake email. Does not book parts or change stock.
+	 * The same Gmail message id returns the job already opened.
+	 *
+	 * @param array $client Name, phone, email, bike, reason, and message_id.
+	 * @return array|WP_Error
+	 */
+	public static function intake( $client ) {
+		if ( ! is_array( $client ) ) {
+			return new WP_Error( 'bs_stock_intake', 'Invalid payload.', array( 'status' => 400 ) );
+		}
+
+		$fields = self::intake_fields( $client );
+		if ( is_wp_error( $fields ) ) {
+			return $fields;
+		}
+
+		$message_id = isset( $client['message_id'] ) && is_scalar( $client['message_id'] ) ? (string) $client['message_id'] : '';
+		$job        = self::create( $fields, $message_id );
+		if ( is_wp_error( $job ) ) {
+			return $job;
+		}
+		if ( ! empty( $job['duplicate'] ) ) {
+			return $job;
+		}
+
+		return array(
+			'status'     => 'success',
+			'id'         => (int) $job['id'],
+			'job_number' => $job['job_number'],
+			'duplicate'  => false,
+		);
 	}
 
 	/**
@@ -1497,6 +1547,151 @@ class BS_Stock_Jobs {
 		}
 
 		return $ids;
+	}
+
+	/**
+	 * Map an email payload onto job columns. A bad year or email is kept in the notes
+	 * so one messy field does not leave the message unread forever.
+	 *
+	 * @param array $client Client payload.
+	 * @return array|WP_Error
+	 */
+	private static function intake_fields( $client ) {
+		$bike   = ( isset( $client['bike'] ) && is_array( $client['bike'] ) ) ? $client['bike'] : array();
+		$name   = self::scalar_text( $client, 'name' );
+		$digits = preg_replace( '/\D/', '', self::scalar_text( $client, 'phone' ) );
+		$digits = is_string( $digits ) ? $digits : '';
+		if ( '' === $name || strlen( $digits ) < 7 ) {
+			return new WP_Error( 'bs_stock_intake', 'Name and phone are required.', array( 'status' => 400 ) );
+		}
+
+		$raw_phone = self::scalar_text( $client, 'phone' );
+		$phone     = ( false !== strpos( $raw_phone, '+' ) ? '+' : '' ) . $digits;
+		$phone     = function_exists( 'mb_substr' ) ? mb_substr( $phone, 0, 40 ) : substr( $phone, 0, 40 );
+
+		$notes = 'Email intake';
+		$email = self::scalar_text( $client, 'email' );
+		$clean = sanitize_email( $email );
+		if ( '' !== $email && ! is_email( $clean ) ) {
+			$shown = self::clip( sanitize_text_field( $email ), 191 );
+			if ( '' !== $shown ) {
+				$notes .= "\nEmail as sent: " . $shown;
+			}
+			$clean = '';
+		}
+
+		$year = self::scalar_text( $bike, 'year' );
+		if ( '' === $year ) {
+			$year = self::scalar_text( $client, 'year' );
+		}
+		$max = (int) current_time( 'Y' ) + 1;
+		if ( '' !== $year && ( ! ctype_digit( $year ) || (int) $year < 1900 || (int) $year > $max ) ) {
+			$shown = self::clip( sanitize_text_field( $year ), 32 );
+			if ( '' !== $shown ) {
+				$notes .= "\nYear as sent: " . $shown;
+			}
+			$year = '';
+		}
+
+		$reason = self::scalar_text( $client, 'reason' );
+		if ( '' === $reason ) {
+			$reason = self::scalar_text( $client, 'description' );
+		}
+
+		return array(
+			'customer_name'  => $name,
+			'customer_phone' => $phone,
+			'customer_email' => $clean,
+			'bike_make'      => self::bike_text( $bike, $client, 'make' ),
+			'bike_model'     => self::bike_text( $bike, $client, 'model' ),
+			'bike_year'      => $year,
+			'vin'            => self::bike_text( $bike, $client, 'vin' ),
+			'description'    => $reason,
+			'notes'          => $notes,
+		);
+	}
+
+	/**
+	 * @param array  $bike Bike object.
+	 * @param array  $client Client object.
+	 * @param string $key Field name.
+	 * @return string
+	 */
+	private static function bike_text( $bike, $client, $key ) {
+		$value = self::scalar_text( $bike, $key );
+		return '' !== $value ? $value : self::scalar_text( $client, $key );
+	}
+
+	/**
+	 * @param array  $source Source array.
+	 * @param string $key Field name.
+	 * @return string
+	 */
+	private static function scalar_text( $source, $key ) {
+		if ( ! is_array( $source ) || ! isset( $source[ $key ] ) || ! is_scalar( $source[ $key ] ) ) {
+			return '';
+		}
+
+		return trim( (string) $source[ $key ] );
+	}
+
+	/**
+	 * @param string $value Text.
+	 * @param int    $max Maximum characters.
+	 * @return string
+	 */
+	private static function clip( $value, $max ) {
+		$value = trim( (string) $value );
+		return function_exists( 'mb_substr' ) ? mb_substr( $value, 0, $max ) : substr( $value, 0, $max );
+	}
+
+	/**
+	 * @param string $raw Gmail message id.
+	 * @return string
+	 */
+	private static function clean_intake_key( $raw ) {
+		$key = strtolower( trim( sanitize_text_field( (string) $raw ) ) );
+		$key = preg_replace( '/[^a-z0-9_\-:]/', '', $key );
+		$key = is_string( $key ) ? $key : '';
+		if ( '' === $key ) {
+			return '';
+		}
+		if ( 0 !== strpos( $key, 'gmail:' ) ) {
+			$key = 'gmail:' . $key;
+		}
+
+		return substr( $key, 0, 80 );
+	}
+
+	/**
+	 * @param string $key Stored intake key.
+	 * @return object|null
+	 */
+	private static function row_by_intake_key( $key ) {
+		global $wpdb;
+
+		$key = self::clean_intake_key( $key );
+		if ( '' === $key ) {
+			return null;
+		}
+
+		$table = self::jobs_table();
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE intake_key = %s", $key ) );
+		return $row ? $row : null;
+	}
+
+	/**
+	 * @param object $job Job row.
+	 * @param bool   $duplicate True when this Gmail message already opened a job.
+	 * @return array
+	 */
+	private static function intake_result( $job, $duplicate ) {
+		return array(
+			'status'     => 'success',
+			'id'         => (int) $job->id,
+			'job_number' => $job->job_number,
+			'duplicate'  => (bool) $duplicate,
+		);
 	}
 
 	/**
