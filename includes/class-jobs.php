@@ -180,6 +180,95 @@ class BS_Stock_Jobs {
 	}
 
 	/**
+	 * Turn one labelled intake email into an open workshop job. The same message id is stored once.
+	 *
+	 * @param array  $client Client and bike fields from the email.
+	 * @param string $message_id Gmail message id, when the caller has one.
+	 * @return array|WP_Error
+	 */
+	public static function log_intake( $client, $message_id = '' ) {
+		if ( ! is_array( $client ) ) {
+			return new WP_Error( 'bs_stock_intake', 'invalid payload', array( 'status' => 400 ) );
+		}
+
+		$bike  = ( isset( $client['bike'] ) && is_array( $client['bike'] ) ) ? $client['bike'] : array();
+		$name  = ( isset( $client['name'] ) && is_scalar( $client['name'] ) ) ? trim( (string) $client['name'] ) : '';
+		$phone = self::intake_phone( ( isset( $client['phone'] ) && is_scalar( $client['phone'] ) ) ? $client['phone'] : '' );
+		if ( '' === $name || '' === $phone ) {
+			return new WP_Error( 'bs_stock_intake', 'name and phone required', array( 'status' => 400 ) );
+		}
+
+		$message_id = self::intake_message_id( $message_id );
+		$claimed    = false;
+		if ( '' !== $message_id ) {
+			$existing = self::duplicate_intake( $message_id );
+			if ( is_array( $existing ) ) {
+				return $existing;
+			}
+
+			$claimed = self::claim_intake( $message_id );
+			if ( is_wp_error( $claimed ) ) {
+				return $claimed;
+			}
+			if ( is_int( $claimed ) ) {
+				$existing = self::duplicate_intake( $message_id, $claimed );
+				if ( is_array( $existing ) ) {
+					return $existing;
+				}
+				delete_option( self::intake_option_key( $message_id ) );
+				$claimed = self::claim_intake( $message_id );
+				if ( is_wp_error( $claimed ) ) {
+					return $claimed;
+				}
+				if ( is_int( $claimed ) ) {
+					$existing = self::duplicate_intake( $message_id, $claimed );
+					if ( is_array( $existing ) ) {
+						return $existing;
+					}
+					return new WP_Error( 'bs_stock_intake_lock', 'could not lock', array( 'status' => 500 ) );
+				}
+			}
+		}
+
+		$reason = ( isset( $client['reason'] ) && is_scalar( $client['reason'] ) ) ? (string) $client['reason'] : '';
+		$notes  = 'Source: email-intake';
+		if ( '' !== $message_id ) {
+			$notes .= "\nIntake-Id: " . $message_id;
+		}
+
+		$scalar = function ( $bag, $key ) {
+			return ( isset( $bag[ $key ] ) && is_scalar( $bag[ $key ] ) ) ? (string) $bag[ $key ] : '';
+		};
+
+		$job = self::create(
+			array(
+				'customer_name'  => $name,
+				'customer_phone' => $phone,
+				'customer_email' => $scalar( $client, 'email' ),
+				'bike_make'      => $scalar( $bike, 'make' ),
+				'bike_model'     => $scalar( $bike, 'model' ),
+				'bike_year'      => $scalar( $bike, 'year' ),
+				'vin'            => $scalar( $bike, 'vin' ),
+				'description'    => $reason,
+				'notes'          => $notes,
+			)
+		);
+		if ( is_wp_error( $job ) ) {
+			if ( true === $claimed ) {
+				delete_option( self::intake_option_key( $message_id ) );
+			}
+			return $job;
+		}
+
+		if ( '' !== $message_id ) {
+			update_option( self::intake_option_key( $message_id ), (int) $job['id'], 'no' );
+		}
+		$job['duplicate'] = false;
+
+		return $job;
+	}
+
+	/**
 	 * Header edits and status changes. Invoicing has its own action.
 	 *
 	 * @param int   $id Job id.
@@ -1394,6 +1483,115 @@ class BS_Stock_Jobs {
 		}
 
 		return number_format( round( (float) $raw, 2 ), 2, '.', '' );
+	}
+
+	/**
+	 * @param string $message_id Sanitized message id.
+	 * @param int    $job_id Known job id, or 0 to search notes.
+	 * @return array|null Job payload when this message was already logged.
+	 */
+	private static function duplicate_intake( $message_id, $job_id = 0 ) {
+		$id = (int) $job_id;
+		if ( ! $id ) {
+			global $wpdb;
+
+			$table = self::jobs_table();
+			$like  = '%Intake-Id: ' . $wpdb->esc_like( $message_id ) . '%';
+			$id    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE notes LIKE %s ORDER BY id DESC LIMIT 1", $like ) );
+		}
+		if ( ! $id || ! self::row( $id ) ) {
+			return null;
+		}
+
+		$job = self::get( $id );
+		if ( is_wp_error( $job ) ) {
+			return null;
+		}
+		$job['duplicate'] = true;
+
+		return $job;
+	}
+
+	/**
+	 * @param string $message_id Sanitized message id.
+	 * @return string
+	 */
+	private static function intake_option_key( $message_id ) {
+		return 'bs_stock_intake_' . $message_id;
+	}
+
+	/**
+	 * @param string $raw Gmail message id.
+	 * @return string
+	 */
+	private static function intake_message_id( $raw ) {
+		$id = preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $raw );
+		if ( ! is_string( $id ) || '' === $id ) {
+			return '';
+		}
+		if ( strlen( $id ) > 80 ) {
+			$id = substr( hash( 'sha256', $id ), 0, 32 );
+		}
+
+		return $id;
+	}
+
+	/**
+	 * Digits and a single leading plus. Blank when it cannot be stored safely.
+	 *
+	 * @param mixed $raw Phone from the email.
+	 * @return string
+	 */
+	private static function intake_phone( $raw ) {
+		$phone = preg_replace( '/[^\d+]/', '', (string) $raw );
+		if ( ! is_string( $phone ) || '' === $phone ) {
+			return '';
+		}
+		if ( false !== strpos( $phone, '+' ) ) {
+			$phone = '+' . str_replace( '+', '', $phone );
+		}
+		$digits = preg_replace( '/\D/', '', $phone );
+		if ( ! is_string( $digits ) || strlen( $digits ) < 1 || strlen( $phone ) > 40 ) {
+			return '';
+		}
+
+		return $phone;
+	}
+
+	/**
+	 * One writer per message. Returns true when this request owns the claim, or the existing job id.
+	 *
+	 * @param string $message_id Sanitized message id.
+	 * @return true|int|WP_Error
+	 */
+	private static function claim_intake( $message_id ) {
+		$key      = self::intake_option_key( $message_id );
+		$deadline = microtime( true ) + 10;
+
+		do {
+			if ( add_option( $key, 'pending:' . time(), '', 'no' ) ) {
+				return true;
+			}
+
+			wp_cache_delete( $key, 'options' );
+			$existing = get_option( $key, '' );
+			if ( is_numeric( $existing ) && (int) $existing > 0 ) {
+				return (int) $existing;
+			}
+
+			$since = 0;
+			if ( is_string( $existing ) && 0 === strpos( $existing, 'pending:' ) ) {
+				$since = (int) substr( $existing, 8 );
+			}
+			if ( ! $since || $since < time() - 60 ) {
+				delete_option( $key );
+				continue;
+			}
+
+			usleep( 200000 );
+		} while ( microtime( true ) < $deadline );
+
+		return new WP_Error( 'bs_stock_intake_lock', 'could not lock', array( 'status' => 500 ) );
 	}
 
 	/**

@@ -1,6 +1,7 @@
 <?php
 /**
  * Logged-in REST API. Reads work with an application password. Writes need the stock page nonce.
+ * Email intake is the exception: a shared secret from wp-config may only open a job card.
  *
  * @package BikeSenseStock
  */
@@ -120,6 +121,15 @@ class BS_Stock_API {
 		);
 		register_rest_route(
 			self::NAMESPACE,
+			'/intake',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( __CLASS__, 'post_intake' ),
+				'permission_callback' => array( __CLASS__, 'can_intake' ),
+			)
+		);
+		register_rest_route(
+			self::NAMESPACE,
 			'/job',
 			array(
 				array(
@@ -186,6 +196,48 @@ class BS_Stock_API {
 	 */
 	public static function can_read() {
 		return current_user_can( 'manage_woocommerce' );
+	}
+
+	/**
+	 * Gmail intake. The secret is compared outside the plugin files so it is not in git.
+	 * Requests fail closed until BS_STOCK_INTAKE_SECRET is set to a long random value.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|WP_Error
+	 */
+	public static function can_intake( $request ) {
+		$expected = self::intake_secret();
+		if ( '' === $expected ) {
+			return new WP_Error( 'bs_stock_intake_disabled', 'Client intake is not configured.', array( 'status' => 503 ) );
+		}
+
+		$provided = (string) $request->get_header( 'x-intake-secret' );
+		if ( ! hash_equals( $expected, $provided ) ) {
+			return new WP_Error( 'bs_stock_intake_unauthorized', 'unauthorized', array( 'status' => 401 ) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * @return string Empty when intake must stay off.
+	 */
+	private static function intake_secret() {
+		$secret = '';
+		if ( defined( 'BS_STOCK_INTAKE_SECRET' ) ) {
+			$secret = BS_STOCK_INTAKE_SECRET;
+		}
+		if ( ! is_string( $secret ) || '' === trim( $secret ) ) {
+			$env    = getenv( 'BS_STOCK_INTAKE_SECRET' );
+			$secret = is_string( $env ) ? $env : '';
+		}
+
+		$secret = trim( (string) $secret );
+		if ( strlen( $secret ) < 32 || 'CHANGE_THIS_TO_A_LONG_RANDOM_STRING' === $secret ) {
+			return '';
+		}
+
+		return $secret;
 	}
 
 	/**
@@ -406,6 +458,34 @@ class BS_Stock_API {
 	 */
 	public static function post_jobs( $request ) {
 		return self::respond( BS_Stock_Jobs::create( self::params( $request ) ) );
+	}
+
+	/**
+	 * Open a job card from a labelled intake email. Does not change stock.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function post_intake( $request ) {
+		$params = self::params( $request );
+		if ( ! isset( $params['client'] ) || ! is_array( $params['client'] ) ) {
+			return new WP_Error( 'bs_stock_intake', 'invalid payload', array( 'status' => 400 ) );
+		}
+
+		$message_id = ( isset( $params['message_id'] ) && is_scalar( $params['message_id'] ) ) ? (string) $params['message_id'] : '';
+		$result     = BS_Stock_Jobs::log_intake( $params['client'], $message_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response(
+			array(
+				'status'     => 'success',
+				'id'         => $result['id'],
+				'job_number' => $result['job_number'],
+				'duplicate'  => ! empty( $result['duplicate'] ),
+			)
+		);
 	}
 
 	/**
