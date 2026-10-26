@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class BS_Stock_Install {
 
-	const DB_VERSION = '2';
+	const DB_VERSION = '3';
 
 	/**
 	 * Create tables, defaults, and the first location.
@@ -137,8 +137,10 @@ class BS_Stock_Install {
 			completed_by bigint(20) unsigned NOT NULL DEFAULT 0,
 			completed_at datetime NULL,
 			cancelled_at datetime NULL,
+			intake_key varchar(80) DEFAULT NULL,
 			PRIMARY KEY  (id),
 			UNIQUE KEY job_number (job_number),
+			UNIQUE KEY intake_key (intake_key),
 			KEY status (status),
 			KEY registration (registration),
 			KEY created_at (created_at)
